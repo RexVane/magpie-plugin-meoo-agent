@@ -20,7 +20,12 @@ const API = "https://meoo.com/open/v1";
 const CHAT = "@ai-sdk/openai-compatible";
 const FELL_BACK = Symbol.for("magpie.fellBack");
 
-const SPEED_TIER   = process.env.MEOO_SPEED_TIER || "fast";      // fast | standard | deep
+// 档位做成模型变体（<model>@fast / @standard / @deep），从模型下拉框里选，
+// 不依赖环境变量。MEOO_SPEED_TIER 只作为「模型 ID 没带 @档位」时的兜底。
+const TIERS = ["fast", "standard", "deep"];
+const TIER_LABEL = { fast: "快速", standard: "标准", deep: "深度" };
+const FALLBACK_TIER = process.env.MEOO_SPEED_TIER || "fast";
+
 const PROJECT_NAME = process.env.MEOO_PROJECT_NAME || "Magpie Bridge";
 const TIMEOUT_MS   = Number(process.env.MEOO_TIMEOUT_MS || 10 * 60 * 1000);
 const AUTO_ANSWER  = process.env.MEOO_AUTO_ANSWER ??
@@ -46,6 +51,24 @@ const MODELS = [
 ];
 
 function isChatModel(id) { return !/^claude/i.test(id); }
+
+// 把 <model>@<tier> 拆开；没带 @档位就用兜底档。
+// 只认三个已知档位名，其余 @ 结尾一概当模型 ID 的一部分（Meoo 的 ID 里没有 @）。
+function splitTier(modelId) {
+  const m = /^(.*)@(fast|standard|deep)$/.exec(String(modelId ?? ""));
+  if (m && m[1]) return { model: m[1], tier: m[2] };
+  return { model: modelId || "auto", tier: FALLBACK_TIER };
+}
+
+// 给每个模型生成三个档位变体：<id>@fast / <id>@standard / <id>@deep
+function variantIds(m) {
+  return TIERS.map((t) => ({
+    id: `${m.id}@${t}`,
+    name: `${m.name ?? m.id} · ${TIER_LABEL[t]}`,
+    context: m.context ?? 0,
+    output: m.output ?? 0,
+  }));
+}
 
 function configModel(m) {
   return {
@@ -285,10 +308,11 @@ async function translate(key, chat, signal) {
   const messages = Array.isArray(chat.messages) ? chat.messages : [];
   if (!messages.length) return errorResponse(400, "messages 不能为空");
 
-  const model = typeof chat.model === "string" && chat.model ? chat.model : "auto";
+  // 客户端发来的可能带 @档位：qwen3.8-flash@deep
+  const requested = typeof chat.model === "string" && chat.model ? chat.model : "auto@fast";
+  const { model, tier } = splitTier(requested);
   const created = Math.floor(Date.now() / 1000);
   const id = "chatcmpl-" + Math.random().toString(36).slice(2, 14);
-  const tier = SPEED_TIER;
 
   const projectId = await ensureProject(key);
   const started = await meoo(key, `/projects/${encodeURIComponent(projectId)}/agent/runs`, {
@@ -310,7 +334,7 @@ async function translate(key, chat, signal) {
   if (chat.stream === true) {
     const enc = new TextEncoder();
     const chunk = (delta, finish = null, usage) => ({
-      id, object: "chat.completion.chunk", created, model,
+      id, object: "chat.completion.chunk", created, model: requested,
       choices: [{ index: 0, delta, finish_reason: finish }],
       ...(usage ? { usage } : {}),
     });
@@ -340,7 +364,7 @@ async function translate(key, chat, signal) {
   const r = await drive(key, projectId, runId, ac.signal, undefined);
   log(`← done credits=${r.credits} chars=${r.text.length}`);
   return jsonResponse({
-    id, object: "chat.completion", created, model,
+    id, object: "chat.completion", created, model: requested,
     choices: [{ index: 0, message: { role: "assistant", content: r.text }, finish_reason: "stop" }],
     usage: {
       prompt_tokens: 0, completion_tokens: 0, total_tokens: 0,
@@ -399,7 +423,10 @@ export async function MeooPlugin({ client } = {}) {
         api: API,
         ...was,
         models: {
-          ...Object.fromEntries(MODELS.map((m) => [m.id, configModel(m)])),
+          // 每个模型挂三个档位变体：<id>@fast / <id>@standard / <id>@deep
+          ...Object.fromEntries(
+            MODELS.flatMap((m) => variantIds(m).map((v) => [v.id, configModel(v)])),
+          ),
           ...(was.models ?? {}),
         },
       };
@@ -408,10 +435,10 @@ export async function MeooPlugin({ client } = {}) {
     provider: {
       id: ID,
       async models(provider, { auth } = {}) {
-        const fallback = () => Object.assign(
-          Object.fromEntries(MODELS.map((m) => [m.id, runtimeModel(m)])),
-          { [FELL_BACK]: true },
+        const toVariants = (list) => Object.fromEntries(
+          list.flatMap((m) => variantIds(m).map((v) => [v.id, runtimeModel(v)])),
         );
+        const fallback = () => Object.assign(toVariants(MODELS), { [FELL_BACK]: true });
         if (auth?.type !== "api" || !auth.key) return fallback();
         try {
           const pid = await ensureProject(auth.key);
@@ -419,17 +446,15 @@ export async function MeooPlugin({ client } = {}) {
           const list = cap?.models ?? [];
           if (!list.length) return fallback();
           const known = new Map(MODELS.map((m) => [m.id, m]));
-          const out = {};
-          for (const m of list) {
+          return toVariants(list.map((m) => {
             const k = known.get(m.id);
-            out[m.id] = runtimeModel({
+            return {
               id: m.id,
               name: m.name ?? k?.name ?? m.id,
               context: k?.context ?? 0,
               output: k?.output ?? 0,
-            });
-          }
-          return out;
+            };
+          }));
         } catch (e) {
           log("取模型目录失败，用兜底清单：", e.message);
           return fallback();
@@ -439,4 +464,4 @@ export async function MeooPlugin({ client } = {}) {
   };
 }
 
-export const _internal = { sseFrames, parseFrame, flatten, MODELS, ID, API };
+export const _internal = { sseFrames, parseFrame, flatten, splitTier, variantIds, MODELS, TIERS, ID, API };

@@ -37,13 +37,30 @@ bun add github:RexVane/magpie-plugin-meoo-agent
 重启 magpie。供应商列表里会出现 **「Meoo 秒悟（建站 Agent）」**（provider id `meoo-agent`），
 用认证方式 `API key（meoo.com → 设置 → API 密钥）` 填入你在 Meoo 后台创建的 `meoo_ak_...`。
 
+## 档位：做成模型变体
+
+Meoo 的 Run 接口有个 `speed_tier` 字段（`fast` 优先低延迟 / `standard` 平衡 / `deep` 更多推理但更慢更费）。
+本插件把它**做成模型变体**，从模型下拉框里直接选，不用配环境变量：
+
+```
+qwen3.8-flash@fast        ← 快速
+qwen3.8-flash@standard    ← 标准
+qwen3.8-flash@deep        ← 深度
+```
+
+每个模型都有这三个变体，所以模型数 = 上游模型数 × 3（实测 14 × 3 = **42 个**）。
+
+插件在起 Run 前会把 `@档位` 后缀剥掉再发给 Meoo，响应里的 `model` 字段仍保留完整变体名。
+
+没带 `@档位` 的模型 ID 走兜底档（默认 `fast`，可用 `MEOO_SPEED_TIER` 覆盖）。
+
 ## 环境变量
 
-在**启动 magpie 之前**设好（插件加载时读取）：
+都是可选的，在**启动 magpie 之前**设好（插件加载时读取）：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `MEOO_SPEED_TIER` | `fast` | `fast` / `standard` / `deep`。`deep` 一次 Run 可达数分钟 |
+| `MEOO_SPEED_TIER` | `fast` | **仅兜底**：模型 ID 没带 `@档位` 时才用 |
 | `MEOO_PROJECT_NAME` | `Magpie Bridge` | Agent 工作所在的项目名，同名复用不重复创建 |
 | `MEOO_TIMEOUT_MS` | `600000` | 单次 Run 超时（毫秒） |
 | `MEOO_AUTO_ANSWER` | 见源码 | Agent 反问时的自动回答。设为空字符串则不自动回答，直接报错 |
