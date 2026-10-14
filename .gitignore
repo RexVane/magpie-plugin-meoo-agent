@@ -1,0 +1,28 @@
+# 依赖与安装产物
+node_modules/
+bun.lock
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# 构建产物与缓存
+dist/
+build/
+*.tsbuildinfo
+.cache/
+
+# 日志与临时文件
+*.log
+*.tmp
+.tmp/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本地密钥（本插件不含任何密钥，但以防万一）
+.env
+.env.*
+!.env.example
